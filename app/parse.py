@@ -1,14 +1,15 @@
 import csv
 import os
-import time
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 
 
@@ -43,8 +44,9 @@ def parse_single_product(
     description = element.find_element(
         By.CLASS_NAME, "description"
     ).text.strip()
-    price_text = element.find_element(By.CLASS_NAME, "price").text
-    price = float(price_text.replace("$", ""))
+    price = float(
+        element.find_element(By.CLASS_NAME, "price").text.replace("$", "")
+    )
 
     if title in reference:
         rating = int(reference[title]["rating"])
@@ -65,26 +67,36 @@ def parse_single_product(
 
 def scrape_page(driver: webdriver.Chrome, url: str, filename: str) -> None:
     reference = get_reference_data(filename)
-    all_products = []
     driver.get(url)
+    wait = WebDriverWait(driver, 5)
+
+    try:
+        cookie_btn = wait.until(
+            expected_conditions.element_to_be_clickable(
+                (By.ID, "acceptContainer")
+            )
+        )
+        cookie_btn.click()
+    except TimeoutException:
+        pass
 
     while True:
-        time.sleep(1)
-        items = driver.find_elements(By.CLASS_NAME, "thumbnail")
-        for item in items:
-            all_products.append(parse_single_product(item, reference))
-
-        next_button = driver.find_elements(By.CSS_SELECTOR, "a[rel='next']")
-        if next_button:
-            parent_li = next_button[0].find_element(By.XPATH, "..")
-            if "disabled" in parent_li.get_attribute("class"):
+        try:
+            load_more_button = wait.until(
+                expected_conditions.element_to_be_clickable(
+                    (By.CSS_SELECTOR, ".btn-primary")
+                )
+            )
+            if "display: none" in load_more_button.get_attribute("style"):
                 break
-            try:
-                next_button[0].click()
-            except ElementClickInterceptedException:
-                driver.execute_script("arguments[0].click();", next_button[0])
-        else:
+            driver.execute_script("arguments[0].click();", load_more_button)
+        except (TimeoutException, NoSuchElementException):
             break
+
+    items = driver.find_elements(By.CLASS_NAME, "thumbnail")
+    all_products: List[Product] = [
+        parse_single_product(item, reference) for item in items
+    ]
 
     all_products.sort(key=lambda product: product.price)
 
@@ -97,12 +109,10 @@ def scrape_page(driver: webdriver.Chrome, url: str, filename: str) -> None:
             ["title", "description", "price", "rating", "num_of_reviews"]
         )
         for prod in all_products:
-            writer.writerow(
-                [
-                    prod.title, prod.description, prod.price,
-                    prod.rating, prod.num_of_reviews
-                ]
-            )
+            writer.writerow([
+                prod.title, prod.description, prod.price,
+                prod.rating, prod.num_of_reviews
+            ])
 
 
 def get_all_products() -> None:
@@ -110,7 +120,7 @@ def get_all_products() -> None:
     options.add_argument("--headless")
     service = Service(ChromeDriverManager().install())
     with webdriver.Chrome(service=service, options=options) as driver:
-        base_url = "https://webscraper.io/test-sites/e-commerce/static"
+        base_url = "https://webscraper.io/test-sites/e-commerce/more"
         pages = {
             f"{base_url}": "home.csv",
             f"{base_url}/computers": "computers.csv",
